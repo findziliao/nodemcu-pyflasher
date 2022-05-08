@@ -111,7 +111,46 @@ class FlashingThread(threading.Thread):
 
 # ---------------------------------------------------------------------------
 
+class UploadThread(threading.Thread):
+    def __init__(self, parent, config):
+        threading.Thread.__init__(self)
+        self.daemon = True
+        self._parent = parent
+        self._config = config
 
+    def run(self):
+        try:
+            command = []
+
+            if not self._config.port.startswith(__auto_select__):
+                command.append("--port")
+                command.append(self._config.port)
+
+            command.extend(["--baud", str(self._config.baud),
+                            "--after", "no_reset",
+                            "write_flash",
+                            # https://github.com/espressif/esptool/issues/599
+                            "--flash_size", "detect",
+                            "--flash_mode", self._config.mode,
+                            "0x200000", self._config.uploadFile_path])
+
+            if self._config.erase_before_flash:
+                command.append("--erase-all")
+
+            print("Command: esptool.py %s\n" % " ".join(command))
+
+            esptool.main(command)
+
+            # The last line printed by esptool is "Staying in bootloader." -> some indication that the process is
+            # done is needed
+            print("\nFirmware successfully flashed. Unplug/replug or reset device \nto switch back to normal boot "
+                  "mode.")
+        except SerialException as e:
+            self._parent.report_error(e.strerror)
+            raise e
+
+
+# ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
 # DTO between GUI and flashing thread
 class FlashConfig:
@@ -120,6 +159,7 @@ class FlashConfig:
         self.erase_before_flash = False
         self.mode = "dio"
         self.firmware_path = None
+        self.uploadFile_path=None
         self.port = None
 
     @classmethod
@@ -198,6 +238,11 @@ class NodeMcuFlasher(wx.Frame):
             worker = FlashingThread(self, self._config)
             worker.start()
 
+        def on_clicked2(event):
+            self.console_ctrl.SetValue("")
+            worker = UploadThread(self, self._config)
+            worker.start()
+
         def on_select_port(event):
             choice = event.GetEventObject()
             self._config.port = choice.GetString(choice.GetSelection())
@@ -205,11 +250,14 @@ class NodeMcuFlasher(wx.Frame):
         def on_pick_file(event):
             self._config.firmware_path = event.GetPath().replace("'", "")
 
+        def on_pick_uploadFile(event):
+            self._config.uploadFile_path = event.GetPath().replace("'", "")
+
         panel = wx.Panel(self)
 
         hbox = wx.BoxSizer(wx.HORIZONTAL)
 
-        fgs = wx.FlexGridSizer(7, 2, 10, 10)
+        fgs = wx.FlexGridSizer(9, 2, 10, 10)
 
         self.choice = wx.Choice(panel, choices=self._get_serial_ports())
         self.choice.Bind(wx.EVT_CHOICE, on_select_port)
@@ -221,6 +269,9 @@ class NodeMcuFlasher(wx.Frame):
 
         file_picker = wx.FilePickerCtrl(panel, style=wx.FLP_USE_TEXTCTRL)
         file_picker.Bind(wx.EVT_FILEPICKER_CHANGED, on_pick_file)
+
+        file_picker2 = wx.FilePickerCtrl(panel, style=wx.FLP_USE_TEXTCTRL)
+        file_picker2.Bind(wx.EVT_FILEPICKER_CHANGED, on_pick_uploadFile)
 
         serial_boxsizer = wx.BoxSizer(wx.HORIZONTAL)
         serial_boxsizer.Add(self.choice, 1, wx.EXPAND)
@@ -271,8 +322,10 @@ class NodeMcuFlasher(wx.Frame):
         add_erase_radio_button(erase_boxsizer, 0, False, "no", erase is False)
         add_erase_radio_button(erase_boxsizer, 1, True, "yes, wipes all data", erase is True)
 
-        button = wx.Button(panel, -1, "Flash NodeMCU")
+        button = wx.Button(panel, -1, "烧录固件")
         button.Bind(wx.EVT_BUTTON, on_clicked)
+        button2 = wx.Button(panel, -1, "上传字库")
+        button2.Bind(wx.EVT_BUTTON, on_clicked2)
 
         self.console_ctrl = wx.TextCtrl(panel, style=wx.TE_MULTILINE | wx.TE_READONLY | wx.HSCROLL)
         self.console_ctrl.SetFont(wx.Font((0, 13), wx.FONTFAMILY_TELETYPE, wx.FONTSTYLE_NORMAL,
@@ -282,7 +335,8 @@ class NodeMcuFlasher(wx.Frame):
         self.console_ctrl.SetDefaultStyle(wx.TextAttr(wx.BLUE))
 
         port_label = wx.StaticText(panel, label="Serial port")
-        file_label = wx.StaticText(panel, label="NodeMCU firmware")
+        file_label = wx.StaticText(panel, label="程序固件")
+        file_label2 = wx.StaticText(panel, label="字体固件")
         baud_label = wx.StaticText(panel, label="Baud rate")
         flashmode_label = wx.StaticText(panel, label="Flash mode")
 
@@ -311,12 +365,13 @@ class NodeMcuFlasher(wx.Frame):
         fgs.AddMany([
                     port_label, (serial_boxsizer, 1, wx.EXPAND),
                     file_label, (file_picker, 1, wx.EXPAND),
+                    file_label2, (file_picker2, 1, wx.EXPAND),
                     baud_label, baud_boxsizer,
                     flashmode_label_boxsizer, flashmode_boxsizer,
                     erase_label, erase_boxsizer,
-                    (wx.StaticText(panel, label="")), (button, 1, wx.EXPAND),
+                    (button2, 1, wx.EXPAND), (button, 1, wx.EXPAND),               
                     (console_label, 1, wx.EXPAND), (self.console_ctrl, 1, wx.EXPAND)])
-        fgs.AddGrowableRow(6, 1)
+        fgs.AddGrowableRow(7, 1)
         fgs.AddGrowableCol(1, 1)
         hbox.Add(fgs, proportion=2, flag=wx.ALL | wx.EXPAND, border=15)
         panel.SetSizer(hbox)
